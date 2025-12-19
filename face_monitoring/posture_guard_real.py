@@ -12,7 +12,7 @@ from typing import Optional, Tuple, Any
 class PostureConfig:
     """姿勢監控配置參數"""
     # 模型路徑
-    model_path: str = '../face_landmarker.task'
+    model_path: str = 'face_landmarker.task'
     
     # 校準參數
     calibration_frames: int = 60  # 校準所需的幀數
