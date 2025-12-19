@@ -12,7 +12,7 @@ from typing import Optional, Tuple, Any
 class PostureConfig:
     """姿勢監控配置參數"""
     # 模型路徑
-    model_path: str = 'face_landmarker.task'
+    model_path: str = '../face_landmarker.task'
     
     # 校準參數
     calibration_frames: int = 60  # 校準所需的幀數
@@ -26,12 +26,14 @@ class PostureConfig:
     
     # 警告觸發條件
     bad_posture_ratio: float = 0.8  # 姿勢不良比例閾值（80%）
-    history_size: int = 30  # 歷史記錄大小（約 1 秒，30 FPS）
+    history_size: int = 60  # 歷史記錄大小（約 2 秒，30 FPS）
     
     # 視覺化參數
     window_name: str = 'Posture Guard v1.0'
     text_color_good: Tuple[int, int, int] = (0, 255, 0)
     text_color_bad: Tuple[int, int, int] = (0, 0, 255)
+    eye_line_color: Tuple[int, int, int] = (255, 255, 0)
+    nose_circle_radius: int = 8
 
 
 class HeadPoseDetector:
@@ -81,7 +83,8 @@ class HeadPoseDetector:
         計算頭部姿態
         
         Returns:
-            dict: 包含 pitch_angle, z, nose_offset 的字典
+            dict: 包含 pitch_angle, z, rvec, tvec, camera_matrix, dist_coeffs, 
+                  nose_offset, eye_center_y 的字典
         """
         # 獲取關鍵點座標
         nose_y = face_landmarks[self.NOSE_TIP].y * h
@@ -105,10 +108,39 @@ class HeadPoseDetector:
         else:
             pitch_angle = 0
         
+        # 使用 solvePnP 計算 3D 姿態（用於視覺化）
+        image_points = np.array([
+            (face_landmarks[self.NOSE_TIP].x * w, face_landmarks[self.NOSE_TIP].y * h),
+            (face_landmarks[self.CHIN].x * w, face_landmarks[self.CHIN].y * h),
+            (face_landmarks[self.LEFT_EYE].x * w, face_landmarks[self.LEFT_EYE].y * h),
+            (face_landmarks[self.RIGHT_EYE].x * w, face_landmarks[self.RIGHT_EYE].y * h),
+            (face_landmarks[self.LEFT_MOUTH].x * w, face_landmarks[self.LEFT_MOUTH].y * h),
+            (face_landmarks[self.RIGHT_MOUTH].x * w, face_landmarks[self.RIGHT_MOUTH].y * h)
+        ], dtype=np.float64)
+        
+        focal_length = w
+        center = (w / 2, h / 2)
+        camera_matrix = np.array([
+            [focal_length, 0, center[0]],
+            [0, focal_length, center[1]],
+            [0, 0, 1]
+        ], dtype="double")
+        dist_coeffs = np.zeros((4, 1))
+        
+        success, rvec, tvec = cv2.solvePnP(
+            self.MODEL_POINTS, image_points, camera_matrix, dist_coeffs
+        )
+        
         return {
             'pitch_angle': pitch_angle,
             'z': face_landmarks[self.NOSE_TIP].z,
-            'nose_offset': nose_offset
+            'rvec': rvec,
+            'tvec': tvec,
+            'camera_matrix': camera_matrix,
+            'dist_coeffs': dist_coeffs,
+            'nose_offset': nose_offset,
+            'eye_center_y': eye_center_y,
+            'face_landmarks': face_landmarks
         }
 
 
@@ -227,13 +259,49 @@ class Visualizer:
         cv2.putText(frame, text, (w//2-100, h//2), 
                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
     
-    def draw_posture_status(self, frame: np.ndarray, status_text: str, is_bad: bool):
-        """繪製姿勢狀態（只顯示狀態文字）"""
+    def draw_posture_info(self, frame: np.ndarray, status_text: str, 
+                         pitch_diff: float, nose_offset: float, 
+                         nose_offset_diff: float, z_diff: float,
+                         is_bad: bool):
+        """繪製姿勢信息"""
         color = self.config.text_color_bad if is_bad else self.config.text_color_good
-        font_scale = 2.5
-        thickness = 5
-        cv2.putText(frame, status_text, (50, 100), 
-                   cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, thickness)
+        
+        cv2.putText(frame, status_text, (50, 50), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+        cv2.putText(frame, f"Pitch Diff: {pitch_diff:+.1f}°", (50, 90), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 1)
+        cv2.putText(frame, f"Nose Offset: {nose_offset:+.1f}px", (50, 120), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 1)
+        cv2.putText(frame, f"Nose Diff: {nose_offset_diff:+.1f}px", (50, 150), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 1)
+        cv2.putText(frame, f"Z Diff: {z_diff:.3f}", (50, 180), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 1)
+    
+    def draw_face_landmarks(self, frame: np.ndarray, face_landmarks, 
+                           eye_center_y: float, nose_offset: float,
+                           rvec, tvec, camera_matrix, dist_coeffs,
+                           color: Tuple[int, int, int]):
+        """繪製臉部關鍵點和輔助線"""
+        h, w = frame.shape[:2]
+        
+        # 繪製眼睛中心線
+        eye_center_y_int = int(eye_center_y)
+        cv2.line(frame, (0, eye_center_y_int), (w, eye_center_y_int), 
+                self.config.eye_line_color, 2)
+        
+        # 繪製鼻子位置
+        nose_y = int(face_landmarks[HeadPoseDetector.NOSE_TIP].y * h)
+        nose_x = int(face_landmarks[HeadPoseDetector.NOSE_TIP].x * w)
+        cv2.circle(frame, (nose_x, nose_y), self.config.nose_circle_radius, color, -1)
+        cv2.circle(frame, (nose_x, nose_y), self.config.nose_circle_radius, 
+                  (255, 255, 255), 2)
+        
+        # 繪製朝向線
+        (nose_end, _) = cv2.projectPoints(
+            np.array([(0.0, 0.0, 300.0)]), rvec, tvec, camera_matrix, dist_coeffs
+        )
+        p2 = (int(nose_end[0][0][0]), int(nose_end[0][0][1]))
+        cv2.line(frame, (nose_x, nose_y), p2, color, 2)
     
     def draw_no_face(self, frame: np.ndarray):
         """繪製未檢測到臉部的提示"""
@@ -301,8 +369,18 @@ class PostureGuard:
         should_warn = self.monitor.should_trigger_warning()
         status_text = self.monitor.get_status_text(evaluation)
         
-        # 只繪製姿勢狀態文字
-        self.visualizer.draw_posture_status(frame, status_text, should_warn)
+        # 繪製信息
+        color = (self.config.text_color_bad if should_warn 
+                else self.config.text_color_good)
+        self.visualizer.draw_posture_info(
+            frame, status_text, pitch_diff, pose_data['nose_offset'],
+            nose_offset_diff, z_diff, should_warn
+        )
+        self.visualizer.draw_face_landmarks(
+            frame, pose_data['face_landmarks'], pose_data['eye_center_y'],
+            pose_data['nose_offset'], pose_data['rvec'], pose_data['tvec'],
+            pose_data['camera_matrix'], pose_data['dist_coeffs'], color
+        )
         
         return frame
     
@@ -344,4 +422,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

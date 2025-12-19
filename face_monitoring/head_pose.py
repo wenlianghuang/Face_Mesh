@@ -5,7 +5,7 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
 # 1. 初始化 MediaPipe Face Landmarker (Tasks API)
-base_options = python.BaseOptions(model_asset_path='face_landmarker.task')
+base_options = python.BaseOptions(model_asset_path='../face_landmarker.task')
 options = vision.FaceLandmarkerOptions(
     base_options=base_options,
     running_mode=vision.RunningMode.IMAGE,

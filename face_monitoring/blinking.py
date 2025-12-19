@@ -8,7 +8,7 @@ import os
 from datetime import datetime
 # 1. 初始化 MediaPipe Face Landmarker
 # 降低檢測閾值以提高對側臉和部分臉部的檢測能力
-base_options = python.BaseOptions(model_asset_path='face_landmarker.task')
+base_options = python.BaseOptions(model_asset_path='../face_landmarker.task')
 options = vision.FaceLandmarkerOptions(
     base_options=base_options,
     output_face_blendshapes=False,
